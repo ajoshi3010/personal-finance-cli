@@ -72,6 +72,17 @@ python3 x.py show_payments
 
 `salary_credited` uses the system month. It records the month after a successful run, so running it again in that same month makes no changes and reports that the cycle was already processed.
 
+## Tab completion
+
+Interactive entity prompts support Ubuntu terminal tab completion through
+Python's standard `readline` module. Press `Tab` after typing part of a value
+to complete it; press `Tab` again when you want to display all matching choices.
+The choices are read from the database when the prompt starts, so newly added
+records are included automatically. Completion is available for active bucket
+names, previously used destinations, mandate IDs, debt IDs, outstanding
+payment IDs, and `y`/`n` confirmations. Password entry remains hidden and does
+not offer completion.
+
 ## Commands
 
 | Command | Purpose |

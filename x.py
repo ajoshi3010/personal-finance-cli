@@ -3,6 +3,7 @@
 import argparse
 import getpass
 import os
+import readline
 import sqlite3
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -29,6 +30,79 @@ def fmt(value):
 def pid(n): return f"P{n:03d}"
 def mid(n): return f"M{n:03d}"
 def did(n): return f"D{n:03d}"
+
+
+def prompt(label, options=None):
+    """Read a line, optionally offering dynamic readline tab completion.
+
+    ``options`` may be a callable (evaluated when completion starts) or an
+    iterable. Completion is deliberately disabled for hidden password input.
+    """
+    if options is None:
+        readline.set_completer(None)
+        return input(label)
+    provider = options if callable(options) else lambda: options
+
+    def completer(text, state):
+        if state == 0:
+            values = [str(value) for value in provider()]
+            # Complete the current whitespace-delimited token, allowing
+            # multiple payment IDs such as "P001 P003".
+            line = readline.get_line_buffer()
+            token = line.rsplit(None, 1)[-1] if line and not line.endswith((" ", "\t")) else ""
+            prefix = token or text
+            completer.matches = [value for value in values if value.lower().startswith(prefix.lower())]
+        try:
+            return completer.matches[state]
+        except IndexError:
+            return None
+
+    completer.matches = []
+    readline.set_completer(completer)
+    readline.parse_and_bind("tab: complete")
+    try:
+        return input(label)
+    finally:
+        readline.set_completer(None)
+
+
+def all_commands():
+    return ['salary_credited', 'outstandings', 'add_bucket', 'show_buckets',
+            'add_mandate', 'add_debt', 'remove_mandate', 'show_mandates',
+            'remove_debt', 'show_payments', 'remove_buckets', 'remove_bucket',
+            'show_debts', 'pay_outstanding']
+
+
+def database_options(query):
+    c = db()
+    try:
+        return [row[0] for row in c.execute(query)]
+    finally:
+        c.close()
+
+
+def active_bucket_names():
+    return database_options("SELECT name FROM buckets WHERE active=1 ORDER BY name")
+
+
+def destination_names():
+    return database_options("SELECT DISTINCT destination FROM mandates ORDER BY destination")
+
+
+def active_mandate_ids():
+    return [mid(value) for value in database_options("SELECT id FROM mandates WHERE active=1 ORDER BY id")]
+
+
+def active_debt_ids():
+    return [did(value) for value in database_options("SELECT id FROM debts WHERE active=1 ORDER BY id")]
+
+
+def outstanding_payment_ids():
+    return [pid(value) for value in database_options("SELECT id FROM payments WHERE status='OUTSTANDING' ORDER BY id")]
+
+
+def yes_no_options():
+    return ['y', 'n']
 
 
 def initialize_db():
@@ -68,9 +142,9 @@ def active_bucket(c, name):
     return c.execute("SELECT id FROM buckets WHERE name=? AND active=1", (name,)).fetchone()
 
 
-def amount(prompt):
+def amount(label):
     try:
-        value = Decimal(input(prompt).strip()).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        value = Decimal(prompt(label).strip()).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         if value <= 0: raise InvalidOperation
         return value
     except (InvalidOperation, ValueError):
@@ -78,7 +152,7 @@ def amount(prompt):
 
 
 def add_bucket(name=None):
-    name = (name if name is not None else input("Bucket name: ")).strip().lower()
+    name = (name if name is not None else prompt("Bucket name: ")).strip().lower()
     if not name: print("Error: bucket name cannot be empty."); return
     c = db()
     try:
@@ -97,14 +171,14 @@ def show_buckets():
 
 def add_mandate():
     c=db(); print("\nAdd Mandate\n" + "-"*50)
-    source=input("Source bucket: ").strip().lower()
+    source=prompt("Source bucket: ", active_bucket_names).strip().lower()
     if not active_bucket(c, source): print(f"Error: bucket '{source}' does not exist."); c.close(); return
-    destination=input("Destination: ").strip()
+    destination=prompt("Destination: ", destination_names).strip()
     if not destination: print("Error: destination cannot be empty."); c.close(); return
     value=amount("Amount: ")
     if value is None: c.close(); return
     print(f"\nMandate:\n  From: {source}\n  To: {destination}\n  Amount: {fmt(paise(value))}")
-    if input("\nConfirm? [y/N]: ").strip().lower() != 'y': print("Mandate creation cancelled."); c.close(); return
+    if prompt("\nConfirm? [y/N]: ", yes_no_options).strip().lower() != 'y': print("Mandate creation cancelled."); c.close(); return
     cur=c.execute("INSERT INTO mandates(source,destination,amount) VALUES(?,?,?)", (source,destination,float(value)))
     c.commit(); c.close(); print(f"\nMandate {mid(cur.lastrowid)} created.")
 
@@ -119,18 +193,18 @@ def show_mandates():
 
 def add_debt():
     c=db(); print("\nAdd Debt\n" + "-"*50)
-    borrower=input("Borrower bucket: ").strip().lower(); lender=input("Lender bucket: ").strip().lower()
+    borrower=prompt("Borrower bucket: ", active_bucket_names).strip().lower(); lender=prompt("Lender bucket: ", active_bucket_names).strip().lower()
     if not active_bucket(c, borrower) or not active_bucket(c, lender): print("Error: borrower and lender must both be existing active buckets."); c.close(); return
     if borrower == lender: print("Error: borrower and lender cannot be the same bucket."); c.close(); return
     value=amount("Amount: ")
     if value is None: c.close(); return
     try:
-        months=int(input("Repayment months: ").strip())
+        months=int(prompt("Repayment months: ").strip())
         if months <= 0: raise ValueError
     except ValueError: print("Error: repayment months must be a positive whole number."); c.close(); return
     total=paise(value); monthly=total//months
     print(f"\nDebt:\n  Borrower: {borrower}\n  Lender: {lender}\n  Amount: {fmt(total)}\n  Repayment period: {months} months\n  Monthly repayment: {fmt(monthly)} (final payment may differ)")
-    if input("\nConfirm? [y/N]: ").strip().lower() != 'y': print("Debt creation cancelled."); c.close(); return
+    if prompt("\nConfirm? [y/N]: ", yes_no_options).strip().lower() != 'y': print("Debt creation cancelled."); c.close(); return
     cur=c.execute("""INSERT INTO debts(borrower,lender,original_amount,outstanding_amount,repayment_months,monthly_repayment,
       original_amount_paise,outstanding_amount_paise,monthly_repayment_paise) VALUES(?,?,?,?,?,?,?,?,?)""",
       (borrower,lender,float(value),float(value),months,monthly/100,total,total,monthly))
@@ -178,7 +252,7 @@ def outstandings():
 
 
 def pay_outstanding():
-    outstandings(); raw=input("\nSelect payment IDs to mark as paid: ").upper().split()
+    outstandings(); raw=prompt("\nSelect payment IDs to mark as paid: ", outstanding_payment_ids).upper().split()
     if not raw: print("No payments selected."); return
     ids=[]; invalid=[]
     for item in raw:
@@ -192,7 +266,7 @@ def pay_outstanding():
     if invalid: print("Invalid or already paid payment IDs: " + ', '.join(invalid))
     if not rows: c.close(); return
     print("Selected: " + ', '.join(pid(r['id']) for r in rows))
-    if input("Confirm? [y/N]: ").strip().lower() != 'y': print("Payment update cancelled."); c.close(); return
+    if prompt("Confirm? [y/N]: ", yes_no_options).strip().lower() != 'y': print("Payment update cancelled."); c.close(); return
     try:
         c.execute("BEGIN")
         for r in rows:
@@ -208,7 +282,8 @@ def pay_outstanding():
 
 
 def active_row(c, table, prefix):
-    raw=input(f"{prefix} ID to remove: ").strip().upper()
+    choices = active_mandate_ids if prefix == 'M' else active_debt_ids
+    raw=prompt(f"{prefix} ID to remove: ", choices).strip().upper()
     if raw.startswith(prefix): raw=raw[1:]
     if not raw.isdigit(): print(f"Error: enter a valid {prefix} ID."); return
     row=c.execute(f"SELECT * FROM {table} WHERE id=? AND active=1", (int(raw),)).fetchone()
@@ -218,7 +293,7 @@ def active_row(c, table, prefix):
 
 def remove_mandate():
     c=db(); r=active_row(c,'mandates','M')
-    if r and input(f"Disable {mid(r['id'])}? Existing payments stay intact. [y/N]: ").strip().lower()=='y': c.execute("UPDATE mandates SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"{mid(r['id'])} disabled.")
+    if r and prompt(f"Disable {mid(r['id'])}? Existing payments stay intact. [y/N]: ", yes_no_options).strip().lower()=='y': c.execute("UPDATE mandates SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"{mid(r['id'])} disabled.")
     elif r: print("Removal cancelled.")
     c.close()
 
@@ -227,7 +302,7 @@ def remove_debt():
     c=db(); r=active_row(c,'debts','D')
     if not r: c.close(); return
     warn=f" It has {fmt(r['outstanding_amount_paise'])} outstanding; future repayments will stop." if r['outstanding_amount_paise'] else ''
-    if input(f"Cancel {did(r['id'])}? Historical payments stay intact.{warn} [y/N]: ").strip().lower()=='y': c.execute("UPDATE debts SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"{did(r['id'])} cancelled.")
+    if prompt(f"Cancel {did(r['id'])}? Historical payments stay intact.{warn} [y/N]: ", yes_no_options).strip().lower()=='y': c.execute("UPDATE debts SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"{did(r['id'])} cancelled.")
     else: print("Removal cancelled.")
     c.close()
 
@@ -239,17 +314,17 @@ def can_deactivate(c, r):
 
 
 def remove_bucket():
-    c=db(); name=input("Bucket name to remove: ").strip().lower(); r=c.execute("SELECT * FROM buckets WHERE name=? AND active=1",(name,)).fetchone()
+    c=db(); name=prompt("Bucket name to remove: ", active_bucket_names).strip().lower(); r=c.execute("SELECT * FROM buckets WHERE name=? AND active=1",(name,)).fetchone()
     if not r: print(f"Error: active bucket '{name}' not found.")
     elif not can_deactivate(c,r): print(f"Cannot remove '{name}': it has active mandates or debts.")
-    elif input(f"Deactivate '{name}'? Historical references stay intact. [y/N]: ").strip().lower()=='y': c.execute("UPDATE buckets SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"Bucket '{name}' deactivated.")
+    elif prompt(f"Deactivate '{name}'? Historical references stay intact. [y/N]: ", yes_no_options).strip().lower()=='y': c.execute("UPDATE buckets SET active=0 WHERE id=?",(r['id'],)); c.commit(); print(f"Bucket '{name}' deactivated.")
     else: print("Removal cancelled.")
     c.close()
 
 
 def remove_buckets():
     show_buckets()
-    if input("Deactivate all safe active buckets? [y/N]: ").strip().lower()!='y': print("Bulk removal cancelled."); return
+    if prompt("Deactivate all safe active buckets? [y/N]: ", yes_no_options).strip().lower()!='y': print("Bulk removal cancelled."); return
     c=db(); rows=c.execute("SELECT * FROM buckets WHERE active=1 ORDER BY id").fetchall()
     for r in rows:
         if can_deactivate(c,r): c.execute("UPDATE buckets SET active=0 WHERE id=?",(r['id'],)); print(f"Bucket '{r['name']}' deactivated.")
