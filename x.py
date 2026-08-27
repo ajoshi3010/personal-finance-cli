@@ -75,6 +75,43 @@ def all_commands():
             'show_debts', 'pay_outstanding']
 
 
+def interactive_cli():
+    """Run a small command loop so the application can be used as a shell."""
+    handlers = {
+        'salary_credited': salary_credited, 'outstandings': outstandings,
+        'show_buckets': show_buckets, 'add_mandate': add_mandate,
+        'add_debt': add_debt, 'remove_mandate': remove_mandate,
+        'show_mandates': show_mandates, 'remove_debt': remove_debt,
+        'show_payments': show_payments, 'remove_buckets': remove_buckets,
+        'remove_bucket': remove_bucket, 'show_debts': show_debts,
+        'pay_outstanding': pay_outstanding,
+    }
+    commands = all_commands() + ['help', 'exit', 'quit']
+    print("Personal Finance CLI interactive mode. Type 'help' for commands; 'exit' to leave.")
+    while True:
+        try:
+            command = prompt("finance> ", commands).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if command in ('exit', 'quit'):
+            break
+        if command == 'help':
+            print("Available commands: " + ', '.join(all_commands()))
+            print("Use 'exit' or 'quit' to leave interactive mode.")
+            continue
+        if not command:
+            continue
+        handler = handlers.get(command)
+        if handler is None:
+            print(f"Unknown command: {command}. Type 'help' for available commands.")
+            continue
+        try:
+            handler()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCommand cancelled.")
+
+
 def database_options(query):
     c = db()
     try:
@@ -345,10 +382,11 @@ def show_payments():
 def main():
     initialize_db(); parser=argparse.ArgumentParser(description='Personal Finance Mandate System'); subs=parser.add_subparsers(dest='command',required=True)
     p=subs.add_parser('add_bucket',help='Create a bucket'); p.add_argument('name',nargs='?',help='Bucket name (otherwise prompted)')
-    names=('salary_credited','outstandings','show_buckets','add_mandate','add_debt','remove_mandate','show_mandates','remove_debt','show_payments','remove_buckets','remove_bucket','show_debts','pay_outstanding')
+    names=('salary_credited','outstandings','show_buckets','add_mandate','add_debt','remove_mandate','show_mandates','remove_debt','show_payments','remove_buckets','remove_bucket','show_debts','pay_outstanding','cli')
     for name in names: subs.add_parser(name)
     args=parser.parse_args()
     if args.command=='add_bucket': add_bucket(args.name); return
+    if args.command=='cli': interactive_cli(); return
     {'salary_credited':salary_credited,'outstandings':outstandings,'show_buckets':show_buckets,'add_mandate':add_mandate,'add_debt':add_debt,'remove_mandate':remove_mandate,'show_mandates':show_mandates,'remove_debt':remove_debt,'show_payments':show_payments,'remove_buckets':remove_buckets,'remove_bucket':remove_bucket,'show_debts':show_debts,'pay_outstanding':pay_outstanding}[args.command]()
 
 

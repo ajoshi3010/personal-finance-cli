@@ -61,6 +61,15 @@ finance outstandings
 finance add_mandate
 ```
 
+For a persistent interactive session with command-name tab completion, run:
+
+```bash
+finance cli
+```
+
+Inside that session, type a command and press `Tab` to complete it. Use
+`help` to list commands and `exit` or `quit` to return to your normal shell.
+
 The launcher resolves the source path before locating `finance.db`, so it does
 not create a second database in `~/.local/bin`. The optional `FINANCE_DB_FILE`
 environment variable still overrides the database location for isolated tests.
@@ -122,6 +131,7 @@ not offer completion.
 | `python3 x.py remove_debt` | Cancel an active debt after confirmation; it stops future debt payments but retains history. |
 | `python3 x.py show_debts` | Show active debts and their outstanding amounts. |
 | `python3 x.py pay_outstanding` | Mark one or more individual outstanding payment IDs as paid. |
+| `python3 x.py cli` | Enter an interactive command session with command-name tab completion. |
 | `python3 x.py show_payments` | Show all payment history, both outstanding and paid. |
 | `python3 x.py remove_bucket` | Safely deactivate one bucket if it has no active mandate or debt. |
 | `python3 x.py remove_buckets` | Conservatively deactivate all buckets that are currently safe to deactivate. |
