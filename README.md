@@ -41,6 +41,30 @@ python3 x.py --help
 
 The application uses `finance.db` in this directory. It creates required tables automatically and preserves existing data.
 
+## Use as a system-wide CLI
+
+To run the application without changing into this directory, install a
+personal command named `finance`:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn /home/anirudh-joshi/personal_finance/x.py ~/.local/bin/finance
+```
+
+Ensure `~/.local/bin` is on your `PATH` (Ubuntu commonly adds it automatically;
+open a new terminal or add `export PATH="$HOME/.local/bin:$PATH"` to your shell
+startup file if needed). You can then run commands from anywhere:
+
+```bash
+finance show_buckets
+finance outstandings
+finance add_mandate
+```
+
+The launcher resolves the source path before locating `finance.db`, so it does
+not create a second database in `~/.local/bin`. The optional `FINANCE_DB_FILE`
+environment variable still overrides the database location for isolated tests.
+
 ## Configure salary processing
 
 `salary_credited` is protected by a password prompt. The typed password is hidden using Python's `getpass` module. The password is not stored in `x.py` or in the database.

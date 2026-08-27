@@ -9,7 +9,9 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-DB_FILE = Path(os.environ.get("FINANCE_DB_FILE", Path(__file__).with_name("finance.db")))
+# Resolve symlinks so a launcher installed in ~/.local/bin still uses the
+# database shipped beside this source file.
+DB_FILE = Path(os.environ.get("FINANCE_DB_FILE", Path(__file__).resolve().with_name("finance.db")))
 
 
 def db():
