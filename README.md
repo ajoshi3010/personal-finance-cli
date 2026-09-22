@@ -211,6 +211,18 @@ Invalid IDs and IDs that are already paid are reported without crashing. Payment
 
   Do not set this variable for normal use unless you intentionally want a different database.
 
+## Create a local database backup
+
+Run the included script from any directory:
+
+```bash
+python3 /home/anirudh-joshi/personal_finance/backup_db.py
+```
+
+It creates a timestamped backup in `backups/` and runs an integrity check. The
+script does not upload or delete anything. Keep the backup directory private;
+it contains your financial data.
+
 ## Important limitations
 
 This is a simple manual tracker. It does not verify that salary was received, that a bank transfer happened, or that an outstanding payment is correct in the real world. It only records the instructions and payment status you enter.

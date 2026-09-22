@@ -1,0 +1,12 @@
+# Local financial data
+finance.db
+backups/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Local editor and environment files
+.env
+.venv/
+venv/
