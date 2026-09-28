@@ -72,7 +72,7 @@ def all_commands():
     return ['salary_credited', 'outstandings', 'add_bucket', 'show_buckets',
             'add_mandate', 'add_debt', 'remove_mandate', 'show_mandates',
             'remove_debt', 'show_payments', 'remove_buckets', 'remove_bucket',
-            'show_debts', 'pay_outstanding']
+            'show_debts', 'pay_outstanding', 'reallocate_outstanding']
 
 
 def interactive_cli():
@@ -85,6 +85,7 @@ def interactive_cli():
         'show_payments': show_payments, 'remove_buckets': remove_buckets,
         'remove_bucket': remove_bucket, 'show_debts': show_debts,
         'pay_outstanding': pay_outstanding,
+        'reallocate_outstanding': reallocate_outstanding,
     }
     commands = all_commands() + ['help', 'exit', 'quit']
     print("Personal Finance CLI interactive mode. Type 'help' for commands; 'exit' to leave.")
@@ -128,6 +129,11 @@ def destination_names():
     return database_options("SELECT DISTINCT destination FROM mandates ORDER BY destination")
 
 
+def reallocation_destination_names():
+    return database_options("""SELECT name FROM buckets WHERE active=1
+      UNION SELECT DISTINCT destination FROM mandates ORDER BY 1""")
+
+
 def active_mandate_ids():
     return [mid(value) for value in database_options("SELECT id FROM mandates WHERE active=1 ORDER BY id")]
 
@@ -161,11 +167,17 @@ def initialize_db():
       FOREIGN KEY(borrower) REFERENCES buckets(name), FOREIGN KEY(lender) REFERENCES buckets(name))""")
     c.execute("""CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT,
       source TEXT NOT NULL, destination TEXT NOT NULL, amount REAL NOT NULL,
-      amount_paise INTEGER NOT NULL, payment_type TEXT NOT NULL CHECK(payment_type IN ('MANDATE','DEBT')),
+      amount_paise INTEGER NOT NULL, payment_type TEXT NOT NULL CHECK(payment_type IN ('MANDATE','DEBT','REALLOCATION')),
       mandate_id INTEGER, debt_id INTEGER, salary_run TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'OUTSTANDING' CHECK(status IN ('OUTSTANDING','PAID')),
+      status TEXT NOT NULL DEFAULT 'OUTSTANDING' CHECK(status IN ('OUTSTANDING','PAID','REALLOCATED')),
       paid_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(mandate_id) REFERENCES mandates(id), FOREIGN KEY(debt_id) REFERENCES debts(id))""")
+    migrate_payments_schema(c)
+    c.execute("""CREATE TABLE IF NOT EXISTS payment_reallocations (
+      original_payment_id INTEGER PRIMARY KEY, replacement_payment_id INTEGER NOT NULL UNIQUE,
+      reason TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(original_payment_id) REFERENCES payments(id),
+      FOREIGN KEY(replacement_payment_id) REFERENCES payments(id))""")
     c.execute("CREATE TABLE IF NOT EXISTS salary_runs (run_month TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
     cols = {r['name'] for r in c.execute("PRAGMA table_info(debts)")}
     for col in ("original_amount_paise", "outstanding_amount_paise", "monthly_repayment_paise"):
@@ -175,6 +187,26 @@ def initialize_db():
       monthly_repayment_paise=CAST(ROUND(monthly_repayment*100) AS INTEGER)
       WHERE original_amount_paise IS NULL OR outstanding_amount_paise IS NULL OR monthly_repayment_paise IS NULL""")
     c.commit(); c.close()
+
+
+def migrate_payments_schema(c):
+    """Expand V1 payment checks while preserving every historic payment row."""
+    sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'").fetchone()[0]
+    if 'REALLOCATED' in sql and 'REALLOCATION' in sql:
+        return
+    c.execute("ALTER TABLE payments RENAME TO payments_pre_reallocation")
+    c.execute("""CREATE TABLE payments (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL, destination TEXT NOT NULL, amount REAL NOT NULL,
+      amount_paise INTEGER NOT NULL, payment_type TEXT NOT NULL CHECK(payment_type IN ('MANDATE','DEBT','REALLOCATION')),
+      mandate_id INTEGER, debt_id INTEGER, salary_run TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OUTSTANDING' CHECK(status IN ('OUTSTANDING','PAID','REALLOCATED')),
+      paid_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(mandate_id) REFERENCES mandates(id), FOREIGN KEY(debt_id) REFERENCES debts(id))""")
+    c.execute("""INSERT INTO payments(id,source,destination,amount,amount_paise,payment_type,
+      mandate_id,debt_id,salary_run,status,paid_at,created_at)
+      SELECT id,source,destination,amount,amount_paise,payment_type,
+      mandate_id,debt_id,salary_run,status,paid_at,created_at FROM payments_pre_reallocation""")
+    c.execute("DROP TABLE payments_pre_reallocation")
 
 
 def active_bucket(c, name):
@@ -320,6 +352,47 @@ def pay_outstanding():
     for r in rows: print(f"{pid(r['id'])} marked as PAID.")
 
 
+def reallocate_outstanding():
+    """Record a completed transfer to a different destination for one mandate payment."""
+    outstandings()
+    raw = prompt("\nOutstanding mandate payment ID to reallocate: ", outstanding_payment_ids).strip().upper()
+    if raw.startswith('P'):
+        raw = raw[1:]
+    if not raw.isdigit():
+        print("Error: enter a valid outstanding payment ID."); return
+    c = db()
+    try:
+        r = c.execute("SELECT * FROM payments WHERE id=? AND status='OUTSTANDING'", (int(raw),)).fetchone()
+        if not r:
+            print(f"Error: {pid(int(raw))} is not an outstanding payment."); return
+        if r['payment_type'] != 'MANDATE' or r['debt_id'] is not None:
+            print("Error: only mandate payments can be reallocated; debt repayments must remain explicit."); return
+        destination = prompt("New destination: ", reallocation_destination_names).strip()
+        if not destination:
+            print("Error: destination cannot be empty."); return
+        if destination == r['destination']:
+            print("Error: the new destination must differ from the original destination."); return
+        reason = prompt("Reason (optional): ").strip() or "Reallocated by user"
+        print(f"\nReallocation:\n  Original: {pid(r['id'])}  {r['source']} → {r['destination']}  {fmt(r['amount_paise'])}\n"
+              f"  Actual:   {r['source']} → {destination}  {fmt(r['amount_paise'])}\n"
+              "  Result: the original becomes REALLOCATED and a linked actual payment is recorded as PAID.")
+        if prompt("\nConfirm? [y/N]: ", yes_no_options).strip().lower() != 'y':
+            print("Reallocation cancelled."); return
+        c.execute("BEGIN")
+        c.execute("UPDATE payments SET status='REALLOCATED', paid_at=NULL WHERE id=?", (r['id'],))
+        cur = c.execute("""INSERT INTO payments(source,destination,amount,amount_paise,payment_type,salary_run,status,paid_at)
+          VALUES(?,?,?,?, 'REALLOCATION',?,'PAID',CURRENT_TIMESTAMP)""",
+          (r['source'], destination, r['amount'], r['amount_paise'], r['salary_run']))
+        c.execute("INSERT INTO payment_reallocations(original_payment_id,replacement_payment_id,reason) VALUES(?,?,?)",
+                  (r['id'], cur.lastrowid, reason))
+        c.commit()
+    except sqlite3.Error as exc:
+        c.rollback(); print(f"Reallocation failed: {exc}"); return
+    finally:
+        c.close()
+    print(f"{pid(r['id'])} marked as REALLOCATED. {pid(cur.lastrowid)} recorded as PAID.")
+
+
 def active_row(c, table, prefix):
     choices = active_mandate_ids if prefix == 'M' else active_debt_ids
     raw=prompt(f"{prefix} ID to remove: ", choices).strip().upper()
@@ -375,19 +448,19 @@ def show_payments():
     c=db(); rows=c.execute("SELECT * FROM payments ORDER BY id").fetchall(); c.close()
     if not rows: print("No payments found."); return
     print("\nPAYMENT HISTORY\n" + "-"*120)
-    for r in rows: print(f"{pid(r['id']):<6} {r['created_at'][:10]:<12} {r['source']:<14} {r['destination']:<25} {fmt(r['amount_paise']):>12}  {r['payment_type']:<8} {r['status']}")
+    for r in rows: print(f"{pid(r['id']):<6} {r['created_at'][:10]:<12} {r['source']:<14} {r['destination']:<25} {fmt(r['amount_paise']):>12}  {r['payment_type']:<12} {r['status']}")
     print("-"*120)
 
 
 def main():
     initialize_db(); parser=argparse.ArgumentParser(description='Personal Finance Mandate System'); subs=parser.add_subparsers(dest='command',required=True)
     p=subs.add_parser('add_bucket',help='Create a bucket'); p.add_argument('name',nargs='?',help='Bucket name (otherwise prompted)')
-    names=('salary_credited','outstandings','show_buckets','add_mandate','add_debt','remove_mandate','show_mandates','remove_debt','show_payments','remove_buckets','remove_bucket','show_debts','pay_outstanding','cli')
+    names=('salary_credited','outstandings','show_buckets','add_mandate','add_debt','remove_mandate','show_mandates','remove_debt','show_payments','remove_buckets','remove_bucket','show_debts','pay_outstanding','reallocate_outstanding','cli')
     for name in names: subs.add_parser(name)
     args=parser.parse_args()
     if args.command=='add_bucket': add_bucket(args.name); return
     if args.command=='cli': interactive_cli(); return
-    {'salary_credited':salary_credited,'outstandings':outstandings,'show_buckets':show_buckets,'add_mandate':add_mandate,'add_debt':add_debt,'remove_mandate':remove_mandate,'show_mandates':show_mandates,'remove_debt':remove_debt,'show_payments':show_payments,'remove_buckets':remove_buckets,'remove_bucket':remove_bucket,'show_debts':show_debts,'pay_outstanding':pay_outstanding}[args.command]()
+    {'salary_credited':salary_credited,'outstandings':outstandings,'show_buckets':show_buckets,'add_bucket':add_bucket,'add_mandate':add_mandate,'add_debt':add_debt,'remove_mandate':remove_mandate,'show_mandates':show_mandates,'remove_debt':remove_debt,'show_payments':show_payments,'remove_buckets':remove_buckets,'remove_bucket':remove_bucket,'show_debts':show_debts,'pay_outstanding':pay_outstanding,'reallocate_outstanding':reallocate_outstanding}[args.command]()
 
 
 if __name__ == '__main__': main()
